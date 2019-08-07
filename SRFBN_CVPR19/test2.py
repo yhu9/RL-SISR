@@ -1,6 +1,10 @@
 import argparse, time, os
 import imageio
 
+import torch
+import numpy as np
+import cv2
+
 import options.options as option
 from utils import util
 from solvers import create_solver
@@ -33,6 +37,7 @@ def main():
 
     # create solver (and load model)
     solver = create_solver(opt)
+
     # Test phase
     print('===> Start Test')
     print("==================================================")
@@ -50,33 +55,85 @@ def main():
 
         need_HR = False if test_loader.dataset.__class__.__name__.find('LRHR') < 0 else True
 
+        step = 4
         for iter, batch in enumerate(test_loader):
-            solver.feed_data(batch, need_HR=need_HR)
+            b,d,h,w = batch['LR'].shape
 
-            # calculate forward time
+            if h % step != 0:
+                hcut = h % step
+                batch['LR'] = batch['LR'][:,:,:h-hcut,:]
+                batch['HR'] = batch['HR'][:,:,:-hcut*4,:]
+            if w % step != 0:
+                wcut = w % step
+                batch['LR'] = batch['LR'][:,:,:,:w-wcut]
+                batch['HR'] = batch['HR'][:,:,:,:-wcut*4]
+            b,d,h,w = batch['LR'].shape
+
+            solver.feed_data(batch,need_HR=need_HR)
             t0 = time.time()
             solver.test()
             t1 = time.time()
-            total_time.append((t1 - t0))
-
             visuals = solver.get_current_visual(need_HR=need_HR)
-            sr_list.append(visuals['SR'])
+            SR_img = visuals['SR']
+            HR_img = visuals['HR']
+            normal_sr_path = 'full_' + os.path.basename(batch['HR_path'][0])[:-4]
 
+            cv2.imshow('FULL SR IMG', (cv2.cvtColor(SR_img,cv2.COLOR_BGR2RGB)).astype(np.uint8))
+
+            sr_list.append(SR_img)
+            path_list.append(os.path.join('out','SR_' + normal_sr_path + '.png'))
             # calculate PSNR/SSIM metrics on Python
             if need_HR:
-                psnr, ssim = util.calc_metrics(visuals['SR'], visuals['HR'], crop_border=scale)
+                psnr, ssim = util.calc_metrics(SR_img, HR_img, crop_border=scale,out=normal_sr_path)
                 total_psnr.append(psnr)
                 total_ssim.append(ssim)
-                path_list.append(os.path.basename(batch['HR_path'][0]).replace('HR', model_name))
                 print("[%d/%d] %s || PSNR(dB)/SSIM: %.2f/%.4f || Timer: %.4f sec ." % (iter+1, len(test_loader),
                                                                                        os.path.basename(batch['LR_path'][0]),
                                                                                        psnr, ssim,
                                                                                        (t1 - t0)))
             else:
-                path_list.append(os.path.basename(batch['LR_path'][0]))
                 print("[%d/%d] %s || Timer: %.4f sec ." % (iter + 1, len(test_loader),
                                                            os.path.basename(batch['LR_path'][0]),
                                                            (t1 - t0)))
+
+            canvas = np.zeros((h*4,w*4,3))
+            for i in range(0,h-1,step):
+                for j in range(0,w-1,step):
+                    mybatch = {}
+                    mybatch['LR_path'] = batch['LR_path']
+                    mybatch['HR_path'] = batch['HR_path']
+                    mybatch['LR'] = batch['LR'][:,:,i:i+step,j:j+step]
+                    mybatch['HR'] = batch['HR'][:,:,i*4:(i+step)*4,j*4:(j+step)*4]
+
+                    # calculate forward time
+                    solver.feed_data(mybatch, need_HR=need_HR)
+                    t0 = time.time()
+                    solver.test()
+                    t1 = time.time()
+                    total_time.append((t1 - t0))
+
+                    visuals = solver.get_current_visual(need_HR=need_HR)
+                    canvas[i*4:(i+step)*4,j*4:(j+step)*4,:] = visuals['SR']
+
+            cv2.imshow('PATCH SR IMG', cv2.cvtColor(canvas.astype(np.uint8),cv2.COLOR_BGR2RGB))
+            cv2.waitKey(1)
+
+            # calculate PSNR/SSIM metrics on Python
+            patch_sr_path = 'patch_' + os.path.basename(batch['HR_path'][0])[:-4]
+            sr_list.append(canvas)
+            path_list.append(os.path.join('out','SR_' + patch_sr_path + '.png'))
+            if need_HR:
+                psnr, ssim = util.calc_metrics(canvas, HR_img, crop_border=scale,out=patch_sr_path)
+                total_psnr.append(psnr)
+                total_ssim.append(ssim)
+                print("[%d/%d] %s || PSNR(dB)/SSIM: %.2f/%.4f || Timer: %.4f sec ." % (iter+1, len(test_loader),
+                                                                                       os.path.basename(batch['LR_path'][0]),
+                                                                                       psnr, ssim,
+                                                                                       (t1 - t0)))
+            else:
+                print("[%d/%d] %s || Timer: %.4f sec ." % (iter + 1, len(test_loader),
+                                                   os.path.basename(batch['LR_path'][0]),
+                                                   (t1 - t0)))
 
         if need_HR:
             print("---- Average PSNR(dB) /SSIM /Speed(s) for [%s] ----" % bm)
@@ -97,10 +154,11 @@ def main():
 
         if not os.path.exists(save_img_path): os.makedirs(save_img_path)
         for img, name in zip(sr_list, path_list):
-            imageio.imwrite(os.path.join(save_img_path, name), img)
+            imageio.imwrite(name, img)
 
     print("==================================================")
     print("===> Finished !")
 
 if __name__ == '__main__':
-    main()
+    with torch.cuda.device(2):
+        main()
