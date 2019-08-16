@@ -97,15 +97,15 @@ def main():
                                                            (t1 - t0)))
 
             canvas = np.zeros((h*4,w*4,3))
-            for i in range(0,h-1,step):
-                for j in range(0,w-1,step):
+            for i in range(0,h-1,step-2):
+                for j in range(0,w-1,step-2):
                     mybatch = {}
                     mybatch['LR_path'] = batch['LR_path']
                     mybatch['HR_path'] = batch['HR_path']
                     mybatch['LR'] = batch['LR'][:,:,i:i+step,j:j+step]
                     mybatch['HR'] = batch['HR'][:,:,i*4:(i+step)*4,j*4:(j+step)*4]
 
-                    # calculate forward time
+                    #calculate forward time
                     solver.feed_data(mybatch, need_HR=need_HR)
                     t0 = time.time()
                     solver.test()
@@ -113,7 +113,7 @@ def main():
                     total_time.append((t1 - t0))
 
                     visuals = solver.get_current_visual(need_HR=need_HR)
-                    canvas[i*4:(i+step)*4,j*4:(j+step)*4,:] = visuals['SR']
+                    canvas[(i+1)*4:(i+step-1)*4,(j+1)*4:(j-1+step)*4,:] = visuals['SR'][:,4:-4,4:-4]
 
             cv2.imshow('PATCH SR IMG', cv2.cvtColor(canvas.astype(np.uint8),cv2.COLOR_BGR2RGB))
             cv2.waitKey(1)
@@ -122,6 +122,8 @@ def main():
             patch_sr_path = 'patch_' + os.path.basename(batch['HR_path'][0])[:-4]
             sr_list.append(canvas)
             path_list.append(os.path.join('out','SR_' + patch_sr_path + '.png'))
+            sr_list.append(HR_img)
+            path_list.append(os.path.join('out','GT_' + os.path.basename(batch['HR_path']) + '.png'))
             if need_HR:
                 psnr, ssim = util.calc_metrics(canvas, HR_img, crop_border=scale,out=patch_sr_path)
                 total_psnr.append(psnr)
